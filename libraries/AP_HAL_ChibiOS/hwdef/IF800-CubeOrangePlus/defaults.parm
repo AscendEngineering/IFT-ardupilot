@@ -270,6 +270,21 @@ SERIAL3_PROTOCOL 5
 SIM_MAG3_DEVID 0
 COMPASS_PRIO1_ID 0
 COMPASS_PRIO2_ID 0
+# HAL_COMPASS_MAX_SENSORS is capped at 2 for SIH and both slots are taken by the
+# simulated mags. The bench board still has its production DroneCAN mag nodes
+# attached; if the DroneCAN compass driver probes them at runtime the registry
+# overflows and AP_HAL::panic("Too many compass instances") watchdog-bootloops
+# the board (WDG T18 IE 0x8820). Mask out the DroneCAN compass driver (bit 11)
+# and disable both CAN drivers entirely -- SIH uses no DroneCAN peripherals
+# (GPS is simulated, BATT*_MONITOR 0 above).
+COMPASS_TYPEMASK 2048
+CAN_P1_DRIVER 0
+CAN_P2_DRIVER 0
+# The production Remote ID transmitter is a DroneCAN node; with CAN disabled its
+# ARM_STATUS can never arrive, so AP_OpenDroneID warns "ODID: lost transmitter"
+# every 5 s (and "lost operator location" unless the GCS streams
+# OPEN_DRONE_ID_SYSTEM). Remote ID is meaningless on a bench sim -- disable it.
+DID_ENABLE 0
 # The simulated compasses must report as "configured" so SIH does not demand a
 # magnetometer calibration. Compass::configured() returns false if a compass has
 # all-zero offsets, so give both sim mags non-zero offsets (values are arbitrary
@@ -333,3 +348,17 @@ CAM2_MNT_INST 0
 # ---- RC stick control of the gimbal (MNT1_DEFLT_MODE 3 = RC_TARGETING) ----
 RC9_OPTION 163
 RC15_OPTION 214
+
+# ---- telemetry + RC radio (TELEM1 / SERIAL1) ----
+# There is exactly one radio: it carries both GCS telemetry and RC, as MAVLink2
+# on SERIAL1 at 115200. RC arrives as RC_CHANNELS_OVERRIDE from the GCS (sysid
+# 19), not from an SBUS/PPM receiver. Firmware defaults (SERIAL1_BAUD 57,
+# SYSID_MYGCS 255) silently kill the link after a param wipe, so pin the
+# production values (from if800-param-backup-2026-07-15.parm) here.
+SERIAL1_PROTOCOL 2
+SERIAL1_BAUD 115
+SYSID_MYGCS 19
+RC_OVERRIDE_TIME 3
+RC_OPTIONS 32
+RC_PROTOCOLS 1
+FLTMODE_CH 7
