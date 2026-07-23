@@ -6,7 +6,12 @@ runs ArduPilot's native SITL physics model *on the real flight controller*, with
 simulated IMU/GPS/baro/compass, while real peripherals (e.g. the Gremsy gimbal and
 its MAVLink camera) stay connected and active.
 
-> A separate **SITL** (desktop simulation) section will be added to this doc later.
+> §2 covers external-physics HITL over PPP/USB; §3 covers desktop SITL.
+
+> **Warning:** Firmware built from this `hitl` branch lineage embeds bench-only
+> parameter defaults (Remote ID disabled, CAN drivers off, battery monitors off, and
+> now `NET_ENABLE 1` / `SERIAL6_PROTOCOL 48`, which also displaces OTG2's normal SLCAN
+> role) and must **never** be flashed on a production aircraft.
 
 ---
 
@@ -212,7 +217,8 @@ differs only in which extra-hwdef overlay is passed; `json-extra-hwdef.dat` `inc
 
 This is a **build-only** step — do not add `--upload`; flash the board with your usual
 tool once the build completes. The artifact is
-`build/IF800-CubeOrangePlus/bin/arducopter.apj`, with roughly 193 KB of flash free.
+`build/IF800-CubeOrangePlus/bin/arducopter.apj`, with 193,292 bytes (~189 KiB) of
+flash free.
 
 > As with SIH, do not pass `--default-param=...` — it is silently ignored for this
 > board (§1.3). All defaults, including the two new networking lines (§2.3), live in
@@ -247,8 +253,8 @@ accel/compass calibration symptoms from §1.4's storage-reset section, do the fu
 Also confirm the GCS link shows two status texts on reboot, in order:
 
 ```
-NET: Initialized
 PPP: started
+NET: Initialized
 ```
 
 Both come from the firmware, not from `pppd` — seeing them confirms the board-side
@@ -373,7 +379,7 @@ Work through these in order; each depends on the one before it:
 
 1. Parameters read back correctly (§2.3): `NET_ENABLE 1`, `SERIAL6_PROTOCOL 48`,
    `SERVO_32_ENABLE 0`.
-2. GCS on SERIAL0 shows `NET: Initialized` then `PPP: started` after boot.
+2. GCS on SERIAL0 shows `PPP: started` then `NET: Initialized` after boot.
 3. `ping 192.168.144.14` succeeds from the laptop.
 4. The backend (§2.5 or §2.6) reports it has received the board's servo packets
    (magic `18458` — `minimal` prints `magic: 18458` and `Connected to ArduPilot
