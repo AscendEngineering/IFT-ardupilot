@@ -1,0 +1,20 @@
+# External-physics HITL overlay for IF800-CubeOrangePlus.
+# Layers on top of the SIH overlay: same bench-only flight firmware, but the
+# physics runs on the laptop and reaches the board as JSON-over-UDP via PPP on
+# the second CDC interface (OTG2 / SERIAL6).
+# Pass via: ./waf configure --board IF800-CubeOrangePlus --extra-hwdef=<this file>
+
+include sih-extra-hwdef.dat
+
+# physics comes from the JSON backend instead of the onboard MultiCopter model
+undef AP_SIM_FRAME_CLASS
+undef AP_SIM_FRAME_STRING
+define AP_SIM_FRAME_CLASS JSON
+define AP_SIM_FRAME_STRING "json:192.168.144.1"
+
+# compile the JSON backend on this hardware build
+define HAL_SIM_JSON_ENABLED 1
+
+# IP networking over PPP (laptop = 192.168.144.1, board = 192.168.144.14)
+define AP_NETWORKING_ENABLED 1
+define AP_NETWORKING_BACKEND_PPP 1
