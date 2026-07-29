@@ -1533,6 +1533,36 @@ def test_ppp0_up_assumes_yes_when_it_cannot_tell():
     assert sites.ppp0_up(_runner=boom) is True
     assert sites.ppp0_up(_runner=lambda: 0) is True
     assert sites.ppp0_up(_runner=lambda: 1) is False
+
+
+def test_launch_script_uses_a_terminal_when_one_is_available(sandbox,
+                                                             monkeypatch):
+    spawned = []
+    monkeypatch.setattr(sites.subprocess, "Popen",
+                        lambda argv, **kw: spawned.append(argv))
+    script, log = sandbox / "launch-gazebo.sh", sandbox / "gz.log"
+    where = sites.launch_script(script, log)
+    assert spawned == [["gnome-terminal", "--", "bash", str(script)]]
+    assert "launch-gazebo.sh" in where
+    assert not log.exists()          # a terminal took it; no log file needed
+
+
+def test_launch_script_falls_back_to_a_log_file(sandbox, monkeypatch):
+    """No gnome-terminal (headless bench): the script still runs, and the
+    operator is told where its output went."""
+    spawned = []
+
+    def popen(argv, **kw):
+        if argv[0] == "gnome-terminal":
+            raise FileNotFoundError("no gnome-terminal here")
+        spawned.append(argv)
+
+    monkeypatch.setattr(sites.subprocess, "Popen", popen)
+    script, log = sandbox / "launch-gazebo.sh", sandbox / "gz.log"
+    where = sites.launch_script(script, log)
+    assert spawned == [["bash", str(script)]]
+    assert str(log) in where
+    assert log.exists()              # opened for append
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
