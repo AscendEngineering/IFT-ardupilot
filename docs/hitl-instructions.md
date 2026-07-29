@@ -431,14 +431,46 @@ problems from PPP/board problems, same idea as §2.7. Geographic placement of th
 world still comes from the board's `SIM_OPOS_LAT/LNG` params (default CMAC:
 -35.363, 149.165) — set them to the survey site before planning the mission.
 
+**Orthophoto survey world (added 2026-07-29):** `worlds/if800_survey.sdf` +
+`models/survey_ground` in `~/git/ardupilot_gazebo` (local additions, not upstream —
+survive repo pulls but exist only on this laptop). Same as `iris_runway.sdf` (5 ms
+physics, iris_with_gimbal) but the ground is a real orthophoto — Esri World Imagery
+zoom 19 (~0.24 m/px; zoom 20 returns 502 at CMAC), 9×9 tiles stitched to a
+561.48 × 559.14 m plane centered on CMAC. Texture orientation verified by headless
+render: image top = `+Y` = north, no mirror.
+
+```bash
+# stop any iris_runway instance first — both bind UDP 9002
+gz sim -v4 -r if800_survey.sdf
+```
+
+**Geo-registration contract** (or camera geotags won't line up with the imagery):
+world `<spherical_coordinates>` = mosaic center = board `SIM_OPOS_LAT/LNG`.
+For the CMAC world that is `-35.36301596 / 149.16515350` (plus `SIM_OPOS_ALT 584`,
+`SIM_OPOS_HDG 0`) — note this is the *tile-block* center, ~40 m from the old CMAC
+default, so update the board params when switching to this world.
+
+To rebuild the texture for the **real survey site**:
+
+```bash
+python3 docs/hitl-tools/fetch_ortho.py <lat> <lng> 19 9 \
+    ~/git/ardupilot_gazebo/models/survey_ground/materials/textures/survey_ortho.jpg
+```
+
+then copy the printed `center_lat/center_lng` into the world's
+`<spherical_coordinates>` and the board's `SIM_OPOS_LAT/LNG`, and the printed
+`size_ew_m size_ns_m` into both `<plane><size>` entries in
+`models/survey_ground/model.sdf`. A 1:1 drone orthophoto of the site beats Esri
+imagery if available — same registration rules (north-up image, plane size = ground
+extent, center = SIM_OPOS).
+
 > **TODO (later): survey-mosaic validation from the sim camera.** Stitch sim-camera
 > frames captured at mission trigger points into an orthomosaic to validate survey
-> geometry (coverage/overlap/GSD) against ground truth. Requires, in order:
+> geometry (coverage/overlap/GSD) against ground truth. Item 3 (orthophoto ground
+> plane, `SIM_OPOS` match) is **done** — see above. Still required, in order:
 > (1) fix the sim gimbal nadir in the iris SDF (or wire MNT2 as a servo mount on
 > channels inside the 16-ch JSON packet — note IF800 channels 9–14 are scripting
 > outputs); (2) set sim camera FOV/resolution to the real payload's spec;
-> (3) texture the ground plane with a 1:1 orthophoto of the real survey site and
-> match `SIM_OPOS` to it — stitchers fail on the featureless default world;
 > (4) save frames keyed to `CAMERA_FEEDBACK` timestamps (camera topic subscriber,
 > or sensor `<save>` + nearest-timestamp pick). Then stitch (e.g. ODM) and diff
 > the mosaic against the input orthophoto. Validates plan geometry only — optics/
