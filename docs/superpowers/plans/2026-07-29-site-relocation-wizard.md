@@ -398,6 +398,7 @@ git add tools/geo.py tools/tests/test_geo.py && git commit -m "tools: geo parsin
 **Interfaces:**
 - Produces: `ImageryError(RuntimeError)`; `MERCATOR_LAT_LIMIT = 85.0511`; `MAX_PX = 5120`; `latlng_to_tile(lat, lng, z) -> (x, y)` floats (raises `ImageryError` beyond the Mercator limit); `tile_to_latlng(x, y, z) -> (lat, lng)`; `zoom_available(lat, lng, zoom, nside) -> bool` (network probe; False when `HIL_OFFLINE`, on non-200, or when the response is not a 256×256 image); `pick_zoom_nside(lat, lng, target_m) -> (zoom, nside)`; `fetch_mosaic(lat, lng, zoom, nside, out, progress=None) -> meta` where `meta` is a dict with keys `center_lat, center_lng, bounds{north,south,west,east}, size_ew_m, size_ns_m, px, gsd_m, zoom, texture`; `progress` is called as `progress(row_done, total_rows)`. CLI preserved: `python3 tools/fetch_ortho.py <lat> <lng> <zoom> <nside> <out_jpg>`.
 - Tile X wraps across the antimeridian (`x % 2**zoom`); tile Y is validated, never wrapped — running off the top or bottom of the map is a plain-English error, not a garbage mosaic.
+- Longitudes are folded back into [-180, 180) by `_wrap_lng`, but **only where the dict is built**. The extents are the raw difference of the unwrapped bounds, so wrapping before that arithmetic turns `size_ew_m` from `+117505` into `-39991117`. Both `center_lng` and the reported `bounds` need the fold: without it a site at exactly longitude 180 yields `center_lng = 180.00034`, which is written to the Gazebo world and to `SIM_OPOS_LNG` on the board. A consequence worth knowing: for a block straddling ±180, `bounds.east < bounds.west`. Nothing consumes `bounds` — it is a record in `site.json` — but a future consumer must not assume the pair is ordered.
 - Not attempted: detecting an imagery server's "no data here" placeholder tile, which is a valid image. Zoom probing plus the operator's own `xdg-open` look at the picture covers that.
 
 - [ ] **Step 1: Write the failing tests**
@@ -525,6 +526,29 @@ def test_pick_zoom_large_area_caps_texture(monkeypatch):
     assert nside * 256 <= fetch_ortho.MAX_PX
 
 
+def test_antimeridian_bounds_and_center_stay_in_range(tmp_path, monkeypatch):
+    """Tile arithmetic runs unwrapped so extents stay computable, but every
+    longitude handed out must be a real one. A naive wrap before the extent
+    maths turns size_ew_m into a large negative number — this pins both
+    halves at once."""
+    monkeypatch.setattr(fetch_ortho.requests, "Session", fake_session())
+    meta = fetch_ortho.fetch_mosaic(0.0, 179.9999, 10, 3,
+                                    str(tmp_path / "m.jpg"))
+    assert -180.0 <= meta["center_lng"] <= 180.0
+    assert -180.0 <= meta["bounds"]["west"] <= 180.0
+    assert -180.0 <= meta["bounds"]["east"] <= 180.0
+    assert meta["size_ew_m"] > 0
+    assert meta["size_ns_m"] > 0
+
+
+def test_center_lng_valid_at_exactly_180(tmp_path, monkeypatch):
+    """center_lng reaches the Gazebo world and SIM_OPOS_LNG on the board, so
+    it has to be a longitude the firmware will accept."""
+    monkeypatch.setattr(fetch_ortho.requests, "Session", fake_session())
+    meta = fetch_ortho.fetch_mosaic(0.0, 180.0, 19, 3, str(tmp_path / "m.jpg"))
+    assert -180.0 <= meta["center_lng"] <= 180.0
+
+
 def test_zoom_available_offline(monkeypatch):
     monkeypatch.setenv("HIL_OFFLINE", "1")
     assert fetch_ortho.zoom_available(0, 0, 19, 3) is False
@@ -592,6 +616,13 @@ def tile_to_latlng(x, y, z):
     lng = x / n * 360.0 - 180.0
     lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))
     return lat, lng
+
+
+def _wrap_lng(lng):
+    """Fold a longitude back into [-180, 180). Tile arithmetic runs on an
+    unwrapped axis so extents stay computable as plain differences; only the
+    values we hand out get folded."""
+    return (lng + 180.0) % 360.0 - 180.0
 
 
 def _block_origin(lat, lng, zoom, nside):
@@ -703,9 +734,9 @@ def fetch_mosaic(lat, lng, zoom, nside, out, progress=None):
 
     return {
         "center_lat": round(lat_c, 8),
-        "center_lng": round(lng_c, 8),
+        "center_lng": round(_wrap_lng(lng_c), 8),
         "bounds": {"north": lat_n, "south": lat_s,
-                   "west": lng_w, "east": lng_e},
+                   "west": _wrap_lng(lng_w), "east": _wrap_lng(lng_e)},
         "size_ew_m": round(size_ew, 2),
         "size_ns_m": round(size_ns, 2),
         "px": nside * TILE_PX,
