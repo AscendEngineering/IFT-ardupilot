@@ -407,6 +407,23 @@ Run it in the backend slot of the boot order (§2.8):
 gz sim -v4 -r iris_runway.sdf        # add -s for headless server-only
 ```
 
+- **`max_step_size` must equal `1 / SCHED_LOOP_RATE`** — with `<lock_step>1</lock_step>`
+  each lockstep frame advances Gazebo by exactly one physics step, and the board
+  consumes one frame per scheduler tick. The world ships with `0.001` (1 kHz), so a
+  200 Hz board loop advanced sim time only 200 ms per wall second: the statustext read
+  `SIM rate 200/1000Hz RTF 0.20` — genuine 5× slow motion, not a display artifact.
+  `worlds/iris_runway.sdf` is edited on the bench to `<max_step_size>0.005</max_step_size>`
+  (physics block renamed `5ms`); re-apply after a plugin repo update, and change it in
+  step if `SCHED_LOOP_RATE` ever changes.
+
+**Bench result (2026-07-29, board + PPP + Gazebo with 5 ms step):** steady
+`SIM rate 200/200Hz RTF 0.99–1.00` — real time holds with full physics in the loop,
+so the §2.3 numbers measured with `minimal` carry over. The `target` column reads a
+steady 200 with Gazebo (fixed-dt sim timestamps), unlike `minimal`'s jitter. Bonus
+recovery data for §2.10: the backend was swapped (`minimal` killed → Gazebo started on
+9002) with the board running, and the loop resumed on its own ~1 s resend — no board
+reboot needed.
+
 Desktop smoke test (verified 2026-07-29): headless server + desktop SITL
 `sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --no-rebuild` reaches a 3D
 GPS fix at CMAC with the plugin bound on `0.0.0.0:9002` — use this to isolate Gazebo
@@ -499,6 +516,10 @@ Don't assume recovery works — exercise it and record what actually happens:
    it. Note whether the board's loop resumes from where it blocked, or whether the
    watchdog reboots the board first — both are plausible outcomes, and the answer
    determines how much of a bench window you actually have.
+   *Observed 2026-07-29:* `minimal` was killed and Gazebo started on 9002 some seconds
+   later (a backend swap, which also covers plain restart); the board resumed on its
+   own — no watchdog reboot, statustexts continued within ~5 s of the new backend
+   binding the port.
 2. **PPP drop.** Kill and restart `pppd` (or unplug/replug the PPP CDC node) while the
    board keeps running, and confirm the reconnect logic re-establishes the link
    without a board-side reboot. This reconnect logic is pinned in this tree from
