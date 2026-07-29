@@ -33,7 +33,9 @@ uint64_t micros() {
 int main() {
     // init the ArduPilot connection
     libAP_JSON ap;
-    if (ap.InitSockets("127.0.0.1", 9002))
+    // bind all interfaces so packets arriving over PPP (dest 192.168.144.1)
+    // are received, not just loopback; replies go to whoever sent first
+    if (ap.InitSockets("0.0.0.0", 9002))
     {
         std::cout << "started socket" << std::endl;
     }
