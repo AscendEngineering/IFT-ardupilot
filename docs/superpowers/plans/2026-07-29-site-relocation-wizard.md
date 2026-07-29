@@ -2362,6 +2362,7 @@ git commit -m "tools: interactive flight-site wizard"
 import builtins
 import io
 import json
+import math
 import types
 from pathlib import Path
 
@@ -2619,6 +2620,51 @@ def test_polar_site_is_refused_for_external_physics(bench, monkeypatch,
     out = capsys.readouterr().out
     assert "85 degrees" in out
     assert (bench.base / "sites/meridian/site.json").exists()
+
+
+def test_a_successful_launch_offers_the_reboot(bench, monkeypatch, capsys):
+    """The positive half of 'reboot only when the simulator came up'. Without
+    it, a wizard that never offered the reboot would pass every other test
+    here."""
+    store, rebooted = fake_board(monkeypatch)
+    answers(monkeypatch,
+            "3",                        # External Physics
+            "39.58012, -104.84325",     # coordinates
+            "meridian",                 # site name
+            "1",                        # area: standard
+            "y",                        # keep the looked-up elevation
+            "n",                        # don't open the picture
+            "y",                        # spawn at the centre
+            "y",                        # launch Gazebo (it comes up)
+            "y",                        # set the Cube's parameters
+            "y",                        # and yes, reboot
+            "1")                        # radio: keep current
+    site_wizard.new_site()
+    out = capsys.readouterr().out
+    assert rebooted == [True]
+    assert "Reboot sent" in out
+    assert "Not rebooting yet" not in out
+
+
+def test_choose_spawn_enforces_the_thirty_metre_margin(monkeypatch, capsys):
+    """Pins EDGE_MARGIN_M from both sides. With a 600 m mosaic the limit is
+    270 m from centre: 290 m must be refused even though it is still inside
+    the texture, and 250 m must be accepted. Widening or zeroing the margin
+    breaks one assertion or the other."""
+    meta = {"center_lat": 39.0, "center_lng": -104.0,
+            "size_ew_m": 600.0, "size_ns_m": 600.0}
+    m_per_deg_lat = 111132.92 - 559.82 * math.cos(2 * math.radians(39.0))
+    inside_texture_but_past_the_margin = 39.0 + 290.0 / m_per_deg_lat
+    comfortably_inside = 39.0 + 250.0 / m_per_deg_lat
+    answers(monkeypatch,
+            "n",                                              # not the centre
+            f"{inside_texture_but_past_the_margin:.8f}, -104.0",
+            f"{comfortably_inside:.8f}, -104.0")
+    east, north = site_wizard.choose_spawn(meta)
+    out = capsys.readouterr().out
+    assert "outside the imagery" in out
+    assert north == pytest.approx(250.0, abs=1.0)
+    assert east == pytest.approx(0.0, abs=1.0)
 ```
 
 - [ ] **Step 2: Run them against the Task 8 wizard**
