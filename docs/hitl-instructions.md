@@ -258,6 +258,7 @@ After flashing, connect a GCS on SERIAL0 (unchanged — §2.1) and confirm:
 | `NET_ENABLE` | `1` | starts `AP_Networking`. |
 | `SERIAL6_PROTOCOL` | `48` | SERIAL6 (OTG2, the second CDC interface) carries PPP. |
 | `SERVO_32_ENABLE` | `0` | keeps the 16-channel servo-output packet (`uint16 pwm[16]`, magic `18458`) that both baseline backends (§2.5, §2.6) parse. |
+| `SCHED_LOOP_RATE` | `200` | **measured requirement, stored-param only** (embedded default is 400): the USB-FS/PPP lockstep round-trip tops out at ~300 Hz (bench, 2026-07-29, `minimal` backend = zero physics cost), so 400 Hz can never hold RTF 1.0. At 200 Hz the board paces to wall clock and reports `RTF ≈ 1.0`. Watch the `SIM rate a/bHz RTF x` statustext (5 s cadence): steady `achieved` = loop rate and RTF ≈ 1.0 is the pass condition; no message at all = lockstep blocked. |
 
 `SERVO_32_ENABLE 1` switches the firmware to a 32-channel packet (`uint16 pwm[32]`,
 magic `29569`) that neither backend understands — the board will look silent to the
