@@ -201,6 +201,22 @@ controller running the real firmware, `sim_vehicle.py` — which launches and ma
 **desktop** SITL process — plays no part in this bench test; it only reappears in §2.7
 for a desktop-only regression check that doesn't involve the board at all.
 
+Two independent processes run on the laptop, and it helps to keep their roles
+separate:
+
+- **`pppd` (§2.4) is network plumbing only.** It turns the second CDC serial port
+  into a point-to-point network interface (`ppp0`), giving the laptop
+  `192.168.144.1` and the board `192.168.144.14`. It moves IP packets and knows
+  nothing about physics, JSON, or port 9002.
+- **The physics backend (§2.5/§2.6) is a plain UDP server.** It sits on port 9002
+  waiting for the board's servo packets and replies with simulated state to whatever
+  address they came from. It knows nothing about USB, serial ports, or PPP — without
+  `pppd` up it just waits forever, reporting `no packets received` with no other
+  error.
+
+Neither process starts the other; both must be running before the board powers on
+(§2.8).
+
 ### 2.2 Build
 
 Same toolchain/venv prerequisites as SIH (§1.2) — nothing additional. The build
@@ -293,6 +309,21 @@ whatever `/dev/serial/by-id/` (or `udevadm`) actually gave you.
 `persist maxfail 0` is required, not cosmetic — see the boot-order caveat in §2.8: the
 link is expected to drop and reconnect around the board's power-on.
 
+What success looks like: `pppd` logs its IPCP negotiation, and `ip a` shows a new
+`ppp0` interface with local address `192.168.144.1` and peer `192.168.144.14`. From
+that point the UDP physics traffic (§2.5) is routed over the USB cable like any other
+network traffic. `nodetach` keeps `pppd` in the foreground, so give it its own
+terminal; Ctrl-C tears the link down.
+
+> **Keep other programs off the PPP port.** Both CDC ports present the same USB
+> VID/PID, so QGroundControl's serial auto-connect will probe **both** — MAVLink
+> heartbeats into the PPP port corrupt the negotiation, and QGC's exclusive open can
+> lock `pppd` out entirely (with `persist` it retries forever, silently). Disable
+> auto-connect (Application Settings → General → AutoConnect → uncheck *Pixhawk*) and
+> add a manual serial link on the SERIAL0 node only. ModemManager, where installed
+> and active, probes new serial ports the same way — mask it or add a udev ignore
+> rule.
+
 ### 2.5 Required baseline backend: the JSON C++ `minimal` example
 
 The board's lockstep loop (§2.8) will not run at all without *something* answering
@@ -304,9 +335,19 @@ cmake --build /tmp/ardupilot-json-example --target minimal
 /tmp/ardupilot-json-example/minimal
 ```
 
-`minimal` listens on UDP `9002` and does nothing until it receives the board's
+`minimal` is a plain UDP process, entirely separate from `pppd` — it knows nothing
+about USB, serial ports, or PPP, and starting it does not bring up the network (§2.4
+does that). It listens on UDP `9002` and does nothing until it receives the board's
 servo-output packet (magic `18458`, 16 channels); it then starts replying to whichever
-IP:port that packet came from — no separate target configuration is needed. It sends
+IP:port that packet came from — no separate target configuration is needed.
+
+> **Bind address matters.** In this tree `minimal.cpp` binds `0.0.0.0:9002` so that
+> packets arriving over `ppp0` — addressed to `192.168.144.1` — are actually
+> delivered to it. The upstream example bound `127.0.0.1`, which only receives
+> loopback traffic: with that bind, `minimal` reports `Broken ArduPilot connection
+> (no packets received)` forever even when PPP and routing are perfectly healthy.
+> If you see `flight dynamics model at 127.0.0.1:9002` in its startup output, you
+> are running a stale loopback-bound build. It sends
 back a fixed, non-moving state (zero position/velocity/attitude, `-9.81 m/s²` on Z for
 gravity) plus a few optional fields (airspeed, windvane, rangefinder), so it satisfies
 the protocol and unblocks the board's loop but does **not** simulate real flight
@@ -339,6 +380,51 @@ Exception("Bad vehicle")` and the script dies immediately. Use `--vehicle iris` 
 quadcopter model (`pyrobolearn.robots.Quadcopter`, `models/iris/iris.urdf`); it maps
 `pwm[0:4]` to the four rotor speeds and speaks the same UDP:9002 JSON protocol as
 §2.5.
+
+### 2.6.1 Optional: Gazebo dynamics backend (recommended over PyBullet)
+
+The official [ArduPilot/ardupilot_gazebo](https://github.com/ArduPilot/ardupilot_gazebo)
+plugin speaks the same JSON protocol on UDP 9002, so Gazebo drops into the same slot
+as `minimal`/`robot.py` with no firmware change. It is better maintained than the
+PyRoboLearn stack and the `iris_runway.sdf` world includes a 3-DOF gimbal with a
+camera (GStreamer-streamable) — a good match for survey-mission benching.
+
+Installed on the bench laptop 2026-07-29 (Ubuntu 22.04):
+
+- Gazebo **Harmonic** (8.14.0) from the OSRF apt repo, plus `libgz-sim8-dev` and
+  `rapidjson-dev`; plugin cloned + built at `~/git/ardupilot_gazebo/build`.
+- `GZ_VERSION`, `GZ_SIM_SYSTEM_PLUGIN_PATH`, `GZ_SIM_RESOURCE_PATH` exported from
+  `~/.zshrc`.
+- **Same loopback trap as §2.5**: the models' `<fdm_addr>` defaults to `127.0.0.1`,
+  which never sees PPP traffic. Both iris models are edited to
+  `<fdm_addr>0.0.0.0</fdm_addr>` (`models/iris_with_gimbal/model.sdf`,
+  `models/iris_with_ardupilot/model.sdf`). Re-apply after a plugin repo update.
+
+Run it in the backend slot of the boot order (§2.8):
+
+```bash
+gz sim -v4 -r iris_runway.sdf        # add -s for headless server-only
+```
+
+Desktop smoke test (verified 2026-07-29): headless server + desktop SITL
+`sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --no-rebuild` reaches a 3D
+GPS fix at CMAC with the plugin bound on `0.0.0.0:9002` — use this to isolate Gazebo
+problems from PPP/board problems, same idea as §2.7. Geographic placement of the
+world still comes from the board's `SIM_OPOS_LAT/LNG` params (default CMAC:
+-35.363, 149.165) — set them to the survey site before planning the mission.
+
+> **TODO (later): survey-mosaic validation from the sim camera.** Stitch sim-camera
+> frames captured at mission trigger points into an orthomosaic to validate survey
+> geometry (coverage/overlap/GSD) against ground truth. Requires, in order:
+> (1) fix the sim gimbal nadir in the iris SDF (or wire MNT2 as a servo mount on
+> channels inside the 16-ch JSON packet — note IF800 channels 9–14 are scripting
+> outputs); (2) set sim camera FOV/resolution to the real payload's spec;
+> (3) texture the ground plane with a 1:1 orthophoto of the real survey site and
+> match `SIM_OPOS` to it — stitchers fail on the featureless default world;
+> (4) save frames keyed to `CAMERA_FEEDBACK` timestamps (camera topic subscriber,
+> or sensor `<save>` + nearest-timestamp pick). Then stitch (e.g. ODM) and diff
+> the mosaic against the input orthophoto. Validates plan geometry only — optics/
+> exposure/vibration stay with the real camera on the bench.
 
 ### 2.7 Desktop-only regression check (no hardware)
 
@@ -421,6 +507,75 @@ Don't assume recovery works — exercise it and record what actually happens:
 
 Record the observed behavior in both cases rather than assuming either one "just
 works" — this is a bench characterization, not a guarantee.
+
+### 2.11 Real peripherals on the bench (radio, gimbal, camera, rangefinder)
+
+The firmware is the real flight code, so real peripherals attach to their real ports
+and speak their real protocols — only the vehicle's *state* (IMU/GPS/baro/mag,
+position, attitude) is simulated. What limits a given device on the bench is not the
+JSON physics but (a) what the SIH overlay compiled out, (b) the bench defaults that
+disable both CAN drivers, and (c) whether the device's data is coherent with a
+simulated world.
+
+Serial map for this build (SERIAL_ORDER `OTG1 USART2 USART3 UART4 UART8 UART7 OTG2`):
+
+| Port | UART | Bench use |
+|------|------|-----------|
+| SERIAL0 | OTG1 (USB CDC 1) | MAVLink to bench GCS |
+| SERIAL1 | USART2 (TELEM1) | Herelink radio: MAVLink2 @115200, GCS telemetry + RC |
+| SERIAL2 | USART3 (TELEM2) | **free** — first candidate for a serial rangefinder |
+| SERIAL3 | UART4 (GPS1) | simulated GPS (protocol 5, sim backend type 100) |
+| SERIAL4 | UART8 (GPS2) | Gremsy gimbal + MAVLink camera, MAVLink2 @115200 |
+| SERIAL5 | UART7 | scripting (protocol 28) |
+| SERIAL6 | OTG2 (USB CDC 2) | PPP (§2.4) — do not touch |
+
+**Radio (Herelink).** Already configured in the embedded defaults: `SERIAL1_PROTOCOL
+2`, `SERIAL1_BAUD 115`, `SYSID_MYGCS 19`, `RC_PROTOCOLS 1`, `FLTMODE_CH 7`. There is
+no SBUS receiver — RC arrives as `RC_CHANNELS_OVERRIDE` from the Herelink GCS (sysid
+19), which is plain MAVLink and works identically under HITL. Plug it into TELEM1 and
+the sticks fly the *simulated* vehicle; this is the supported way to exercise arming,
+mode changes, and failsafe behavior on the bench. Remember the §2.3 precedence rule:
+if the board ever stored different SERIAL1/SYSID values, they silently win over these
+defaults — read them back.
+
+**Gimbal + camera (Gremsy, MAVLink).** Also already configured: `SERIAL4_PROTOCOL 2`
++ `SERIAL4_BAUD 115` route their heartbeats, `MNT1_TYPE 6` / `CAM2_TYPE 6` bind them,
+and `RC9_OPTION 163` (mount lock) / `RC15_OPTION 214` (mount yaw) give the sticks
+control (`MNT1_DEFLT_MODE 3` = RC_TARGETING). `HAL_MOUNT_ENABLED 1` and
+`AP_CAMERA_ENABLED 1` are explicitly kept in the SIH overlay, so nothing is compiled
+out. The real gimbal physically moves while the vehicle "flies" in sim — expected and
+harmless on the bench. Verify discovery the same way as §3.6: gimbal responds to RC,
+and `CAMERA_INFORMATION` comes back populated rather than UNSUPPORTED.
+
+**Rangefinder — not plug-and-play in this build.** Two separate obstacles:
+
+1. **The driver is compiled out.** `sih-extra-hwdef.dat` sets
+   `AP_RANGEFINDER_BACKEND_DEFAULT_ENABLED 0`, which removes every rangefinder
+   backend from the firmware (production never used one — all `RNGFND*_TYPE` are 0
+   in the param backup). Setting `RNGFND1_TYPE` on this firmware does nothing. To
+   bench a real unit, add to `json-extra-hwdef.dat` either
+   `define AP_RANGEFINDER_BACKEND_DEFAULT_ENABLED 1` (all drivers, costs flash) or
+   the specific driver's define from `AP_RangeFinder_config.h`, rebuild, reflash,
+   then configure as usual: `RNGFND1_TYPE <driver>`, and for a serial unit
+   `SERIAL2_PROTOCOL 9` + `SERIAL2_BAUD` on TELEM2 (the free port above).
+   The simulated rangefinder is *also* unavailable on this board:
+   `AP_RANGEFINDER_SIM_ENABLED` is SITL-board-only in this tree, so the `rng_1` …
+   `rng_6` fields `minimal` sends are parsed and then unused (`RNGFND1_TYPE 100`
+   cannot instantiate).
+2. **Its data is incoherent with the sim.** A real rangefinder measures the bench —
+   a fixed ~0 m to the ceiling/floor — while the EKF flies simulated altitude.
+   Anything that consumes rangefinder data (surface tracking, precision landing,
+   terrain-relative behavior) will act on the bench distance, not the sim. Use the
+   real unit on the bench to verify *detection and data flow only* (driver
+   instantiates, `DISTANCE_SENSOR` streams sane values in the GCS); do not expect
+   sim flight behavior to use it sensibly.
+
+**DroneCAN peripherals (production GPS/compass/battery nodes, or a CAN rangefinder).**
+Intentionally dead on the bench: the defaults set `CAN_P1_DRIVER 0`, `CAN_P2_DRIVER
+0`, `BATT_MONITOR 0`, `DID_ENABLE 0`. Re-enabling CAN re-introduces the
+compass-registry overflow bootloop (`HAL_COMPASS_MAX_SENSORS` is 2 and both slots
+hold the sim mags — see the `defaults.parm` comments). Keep CAN off; prefer a serial
+rangefinder for bench work.
 
 ---
 
