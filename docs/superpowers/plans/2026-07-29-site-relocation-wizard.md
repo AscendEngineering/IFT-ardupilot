@@ -1251,7 +1251,11 @@ def test_reboot_sends_command():
     conn = FakeConn()
     board.reboot(conn)
     assert len(conn.mav.commands) == 1
-    assert conn.mav.commands[0][3] == 1        # param1 = reboot autopilot
+    # command_long_send is (target_system, target_component, command,
+    # confirmation, param1, ...) — so param1, the "reboot autopilot"
+    # selector, is index 4. Index 3 is confirmation, which we send as 0.
+    assert conn.mav.commands[0][3] == 0        # confirmation
+    assert conn.mav.commands[0][4] == 1        # param1 = reboot autopilot
 
 
 def test_radio_tables():
