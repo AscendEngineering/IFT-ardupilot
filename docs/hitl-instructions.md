@@ -450,19 +450,17 @@ For the CMAC world that is `-35.36301596 / 149.16515350` (plus `SIM_OPOS_ALT 584
 `SIM_OPOS_HDG 0`) — note this is the *tile-block* center, ~40 m from the old CMAC
 default, so update the board params when switching to this world.
 
-To rebuild the texture for the **real survey site**:
-
-```bash
-python3 docs/hitl-tools/fetch_ortho.py <lat> <lng> 19 9 \
-    ~/git/ardupilot_gazebo/models/survey_ground/materials/textures/survey_ortho.jpg
-```
-
-then copy the printed `center_lat/center_lng` into the world's
-`<spherical_coordinates>` and the board's `SIM_OPOS_LAT/LNG`, and the printed
-`size_ew_m size_ns_m` into both `<plane><size>` entries in
-`models/survey_ground/model.sdf`. A 1:1 drone orthophoto of the site beats Esri
-imagery if available — same registration rules (north-up image, plane size = ground
-extent, center = SIM_OPOS).
+To move the site: operators use the interactive **Flight Site Wizard** —
+`python3 tools/site_wizard.py` in the HIL-Sim-Bench repo (wiki page
+"Changing the Flight Site"). It downloads imagery, rewrites this world's
+`<spherical_coordinates>`/plane sizes/spawn pose, sets `SIM_OPOS_*` over USB,
+and generates per-site launch scripts. The imagery fetcher lives there too
+(`tools/fetch_ortho.py`, moved from this repo); its output JSON carries the
+same registration values described above. Note the wizard keeps `.orig` and
+`.bak` copies beside the world, model and texture — nothing under
+ardupilot_gazebo is tracked by git. A 1:1 drone orthophoto of the site still
+beats Esri imagery if available — same registration rules (north-up image,
+plane size = ground extent, center = SIM_OPOS).
 
 > **TODO (later): survey-mosaic validation from the sim camera.** Stitch sim-camera
 > frames captured at mission trigger points into an orthomosaic to validate survey
