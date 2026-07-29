@@ -45,7 +45,9 @@ laptop. No new installs. Linux/bench-laptop only.
 Main menu:
 1. **Set up a new site**
 2. **Switch to a saved site** — re-applies a `sites/<name>/` folder with no
-   re-download; instant switching between the handful of sites testers use
+   re-download; instant switching between the handful of sites testers use.
+   Ends with a quick radio prompt (keep current / Herelink / Taisync) so a
+   site switch and a radio switch are one pass
 3. **Show current site** — reads `site.json` state + board `SIM_OPOS` if reachable
 4. **Radio setup (Herelink / Taisync)** — standalone param step, also offered
    during new-site setup
