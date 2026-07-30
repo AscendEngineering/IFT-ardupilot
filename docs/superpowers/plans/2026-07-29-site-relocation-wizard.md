@@ -1,5 +1,14 @@
 # Flight-Site Relocation Wizard Implementation Plan
 
+> **STATUS: IMPLEMENTED — the code below is no longer the source of truth.**
+> Tasks 1-9, 11 and 12 are done. The working implementation is
+> `~/git/IFT/HIL-Sim-Bench`, branch `flight-site-wizard` (102 tests). A final
+> whole-branch review found defects at the module seams that the per-task
+> reviews could not see, and the fixes live only in that branch — the code
+> blocks in this document reproduce the **pre-fix** modules. Read the
+> "Corrections found after implementation" section at the end before reusing
+> anything here. Task 10 (live bench verification) is still outstanding.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** An interactive terminal wizard in the HIL-Sim-Bench repo that lets non-technical test operators relocate the simulated flight site (SITL / SIH / External-Physics) to any real-world location, plus an operator wiki page.
@@ -3032,3 +3041,91 @@ center currently in the world file — and the spawn pose is reformatted from
 `0 0 0.195` to `0.0 0.0 0.195` even when the spawn point is unchanged. Task 10
 now states the achievable invariant (two identical runs produce identical files,
 physics block byte-identical) and lists exactly which lines are allowed to move.
+
+---
+
+## Corrections found after implementation
+
+The plan's per-task code was implemented and reviewed task by task, then the
+whole branch was reviewed as one piece. That last pass found defects that only
+exist **between** modules — each module was correct on its own terms, which is
+exactly why nine task reviews missed them. Fixed in HIL-Sim-Bench commit
+`0261ac2`; the code blocks above still show the pre-fix versions.
+
+### 1. Critical: a saved-site re-download fetched a different tile block
+
+`use_saved_site` re-fetched missing imagery by passing the **saved mosaic
+centre** as the search pin. Feeding a block's own centre back into
+`_block_origin` does not reproduce that block: with an even `nside` the centre
+sits exactly on a tile boundary, so 8-decimal rounding decides which side of
+`int()` it lands on, and `lat_c` is an arithmetic mean in degrees while the
+tile axis is Mercator and non-linear. `fetch_mosaic`'s return value was then
+discarded, so `apply_site` wrote the **saved** (correct) coordinates alongside
+the **shifted** texture.
+
+Every coordinate still agreed, so `warn_mismatch` could not see it. Only the
+pixels moved. Measured: CMAC — this bench's own site — shifted **44.1 m**,
+Auckland 86.5 m, and **1780 of 4000** random sites (44%) landed on a different
+block. For a survey bench whose whole purpose is checking camera geotags
+against imagery, that is the failure the geo-registration contract exists to
+prevent.
+
+The fix has two halves, both needed:
+
+```python
+# fetch_ortho._block_origin — round-trip stable (0/4000 unstable, was 1780)
+x0 = math.floor(cx - nside / 2.0 + 0.5)
+y0 = math.floor(cy - nside / 2.0 + 0.5)
+```
+
+plus `fetch_mosaic` recording `tile_x0`/`tile_y0`/`nside` in `meta` and
+accepting an `origin=(x0, y0)` used verbatim, so `use_saved_site` reloads the
+identical block by construction rather than by recomputation. A regression
+test asserts the re-download requests the identical set of tile URLs.
+
+### 2. `radio_prompt` bypassed the reboot gate
+
+`external_flow` computed `ready` and passed `offer_reboot=ready`, printing
+"Not rebooting yet…" when the simulator had not come up — and then
+`radio_prompt()` called `apply_board_params` with the default `offer_reboot=True`,
+offering a reboot ten lines later. `radio_prompt` now takes and threads
+`offer_reboot`/`no_reboot_reason`.
+
+### 3. The generated launch script could fail with no window and no log
+
+`LAUNCH_GAZEBO` did not export `GZ_SIM_RESOURCE_PATH`, which on this bench is
+set only in `~/.zshrc` — inherited from an interactive shell, absent from a
+desktop launcher. Without it `gz sim` exits immediately, the terminal closes
+with it, and `wait_for_sim_port` burns 90 s before printing "check its window,
+or gazebo.log" — but `launch_script` only created a log on the *no-terminal*
+branch, so that file did not exist. The script now bakes in the resource path
+from `sites.GAZEBO_DIR`, and the log is always written with the failed window
+held open.
+
+### 4. The wizard reported success when the Cube was not updated
+
+`apply_board_params` returns `False` on every fallback path, but the result was
+ignored and "Done — this site is saved." printed regardless — while the world
+and `site.json` were at the new site and the flight controller was not. The
+flows now propagate it and say plainly that the drone will fly over the old
+ground until the printed `SIM_OPOS_*` values are set and the Cube rebooted.
+
+### 5. `HIL_OFFLINE=1` did not stop `fetch_mosaic`
+
+The Global Constraints say it skips all network lookups; `zoom_available` and
+`geo.get_elevation` honoured it and `fetch_mosaic` did not. The suite was
+hermetic only because no test reached a download. Now it raises `ImageryError`.
+
+### 6. A test that could not fail
+
+`test_crash_is_friendly_without_debug` asserted only `"Traceback" not in stderr`,
+which passes even for Python's "can't open file" error. It now also pins
+`returncode == 0`, empty stderr, and the closing `Cancelled.`
+
+### Two carry-overs for the first bench run
+
+- Any site saved **before** `0261ac2` has no `tile_x0` in its `site.json`. The
+  fallback keeps it loading, but re-save it via "Set up a new site" before
+  trusting its re-download.
+- Any launch script generated before `0261ac2` lacks `GZ_SIM_RESOURCE_PATH`;
+  regenerate it.
