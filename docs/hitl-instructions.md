@@ -258,7 +258,7 @@ After flashing, connect a GCS on SERIAL0 (unchanged — §2.1) and confirm:
 | `NET_ENABLE` | `1` | starts `AP_Networking`. |
 | `SERIAL6_PROTOCOL` | `48` | SERIAL6 (OTG2, the second CDC interface) carries PPP. |
 | `SERVO_32_ENABLE` | `0` | keeps the 16-channel servo-output packet (`uint16 pwm[16]`, magic `18458`) that both baseline backends (§2.5, §2.6) parse. |
-| `SCHED_LOOP_RATE` | `200` | **measured requirement, stored-param only** (embedded default is 400): the USB-FS/PPP lockstep round-trip tops out at ~300 Hz (bench, 2026-07-29, `minimal` backend = zero physics cost), so 400 Hz can never hold RTF 1.0. At 200 Hz the board paces to wall clock and reports `RTF ≈ 1.0`. Watch the `SIM rate a/bHz RTF x` statustext (5 s cadence): steady `achieved` = loop rate and RTF ≈ 1.0 is the pass condition; no message at all = lockstep blocked. |
+| `SCHED_LOOP_RATE` | `200` (lockstep) / `400` (free-run, §2.6.1) | **Lockstep: measured requirement, stored-param only** (embedded default is 400): the PPP-over-USB lockstep round-trip tops out at ~300 Hz (bench, 2026-07-29, `minimal` backend = zero physics cost), so 400 Hz can never hold RTF 1.0. At 200 Hz the loop has a 5 ms budget and reports `RTF ≈ 1.0`. The ceiling is not the USB wire: it is the firmware's polling chain — the UART rx thread copies USB data into the ring buffer on a 1 kHz tick (`UARTDriver.cpp` `uart_rx_thread`, 0–1 ms), the PPP thread polls `uart->read()` every 200 µs, and the loop's own compute comes out of the same budget. MAVLink `TIMESYNC` over the same USB path measured p50 3.2 ms / p90 4.9 ms (2026-09-01). **Free-run (`<lock_step>0</lock_step>`) removes the round-trip from the loop and lets the embedded `400` stand** — see §2.6.1. Watch the `SIM rate a/bHz RTF x` statustext (5 s cadence): steady `achieved` = loop rate and RTF ≈ 1.0 is the pass condition; no message at all = lockstep blocked. |
 
 `SERVO_32_ENABLE 1` switches the firmware to a 32-channel packet (`uint16 pwm[32]`,
 magic `29569`) that neither backend understands — the board will look silent to the
@@ -423,6 +423,55 @@ steady 200 with Gazebo (fixed-dt sim timestamps), unlike `minimal`'s jitter. Bon
 recovery data for §2.10: the backend was swapped (`minimal` killed → Gazebo started on
 9002) with the board running, and the loop resumed on its own ~1 s resend — no board
 reboot needed.
+
+#### Free-run mode (`no_lockstep`) — the 400 Hz option
+
+Added 2026-09-01 as a cherry-pick of upstream `759e03f1aa` ("SITL: add JSON
+non-lockstep mode", in Copter-4.7.0) onto `hitl-network`, with hardware fixes on top.
+**Not yet bench-verified** — it needs the JSON image rebuilt and flashed.
+
+Upstream's answer to "physics link slower than the flight loop" is not a faster link
+but decoupling: the backend sets `"no_lockstep": true` in every state packet, and the
+board then never waits for physics. Each loop `recv_fdm()` polls the socket with a zero
+timeout; if a state packet is there it drains the backlog and parses the newest one,
+if not it advances sim time by `1/SIM_RATE_HZ` and runs the controllers on the last
+state. The scheduler alone paces the loop, so `SCHED_LOOP_RATE 400` (the embedded
+default) holds regardless of round-trip time. Gazebo paces itself to wall clock via the
+world's `<real_time_factor>1.0</real_time_factor>` and publishes a state packet on
+**every** physics step (`ArduPilotPlugin::PostUpdate`), lockstep or not.
+
+To switch: in `models/iris_with_gimbal/model.sdf` set `<lock_step>0</lock_step>`;
+leave `SCHED_LOOP_RATE` / `SIM_RATE_HZ` at the embedded `400` (remove the stored `200`
+from the bench board, or it runs free-run at 200); set the world `max_step_size` so the
+physics rate does not exceed the loop rate (`0.0025` for 400 Hz; a faster physics rate
+is tolerated because the board drains to the newest packet, but it burns PPP
+bandwidth and lwIP netbufs that MAVLink shares).
+
+What the numbers mean in free-run:
+
+- `SIM rate a/bHz RTF x` — `achieved` is now the flight-loop rate and `target` is
+  `SIM_RATE_HZ`; RTF ≈ 1.0 says the **loop** holds rate. It no longer says anything
+  about physics freshness. Read Gazebo's own RTF for that.
+- `SIM: no physics data for Nms` (CRITICAL, every 5 s) — the board has had no state
+  packet for >200 ms and is flying on frozen sensors. In lockstep a dead backend
+  stalls the loop loudly; in free-run this statustext is the only warning.
+- The Gazebo console warning `Missed N input frames` means the board sent servo
+  packets the plugin did not consume in order — expected at low rates in free-run.
+
+What you give up: determinism (lockstep runs are bit-repeatable, free-run is not) and
+up to one round-trip of sensor staleness (~3 ms). For real-time survey/mission work
+that is closer to a real airframe than lockstep is; for regression runs keep
+`lock_step 1` at 200 Hz.
+
+Two side effects of the same change set, both of which apply to **lockstep** too:
+
+1. The JSON parser could not read JSON booleans — `strtoull("true")` is 0 — so the
+   plugin's `no_time_sync: true` had never taken effect and the board was also
+   sleep-pacing itself inside `sync_frame_time()`. Fixed (`SIM_JSON.cpp` `BOOLEAN`
+   case); now Gazebo's real-time factor is the only pacer in lockstep. The verified
+   `SIM rate 200/200Hz RTF ~1.0` result should hold, but re-check it after flashing.
+2. The `SIM rate` statustext moved from `sync_frame_time()` to `time_advance()` so it
+   reports whether or not the backend asks for `no_time_sync`.
 
 Desktop smoke test (verified 2026-07-29): headless server + desktop SITL
 `sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --no-rebuild` reaches a 3D
