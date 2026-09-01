@@ -240,6 +240,29 @@ void Aircraft::time_advance()
         time_now_us += frame_time_us;
     }
     last_time_us = time_now_us;
+
+#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
+    // on hardware HITL the real-time factor is the key bench number:
+    // report a 5s average so the GCS message log records whether the
+    // external physics is holding wall-clock real time. Lives here, not
+    // in sync_frame_time(), so it reports whether or not the backend
+    // asked for no_time_sync and in both lockstep and free-run modes.
+    {
+        const uint32_t now_ms = get_wall_time_us() / 1000ULL;
+        if (now_ms - last_rate_report_ms >= 5000) {
+            if (last_rate_report_ms != 0) {
+                const float dt = (now_ms - last_rate_report_ms) * 0.001f;
+                const float avg_hz = (frame_counter - last_rate_report_frames) / dt;
+                const float target_hz = rate_hz * target_speedup;
+                GCS_SEND_TEXT(MAV_SEVERITY_INFO, "SIM rate %.0f/%.0fHz RTF %.2f",
+                              avg_hz, target_hz, target_hz > 0 ? avg_hz/target_hz : 0.0f);
+            }
+            last_rate_report_ms = now_ms;
+            last_rate_report_frames = frame_counter;
+        }
+    }
+#endif
+
     if (use_time_sync) {
         sync_frame_time();
     }
@@ -309,22 +332,6 @@ void Aircraft::sync_frame_time(void)
         last_fps_report_ms = now_ms;
     }
 
-#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
-    // on hardware HITL the real-time factor is the key bench number:
-    // report a 5s average so the GCS message log records whether the
-    // external-physics lockstep is holding wall-clock real time
-    if (now_ms - last_rate_report_ms >= 5000) {
-        if (last_rate_report_ms != 0) {
-            const float dt = (now_ms - last_rate_report_ms) * 0.001f;
-            const float avg_hz = (frame_counter - last_rate_report_frames) / dt;
-            const float target_hz = rate_hz * target_speedup;
-            GCS_SEND_TEXT(MAV_SEVERITY_INFO, "SIM rate %.0f/%.0fHz RTF %.2f",
-                          avg_hz, target_hz, target_hz > 0 ? avg_hz/target_hz : 0.0f);
-        }
-        last_rate_report_ms = now_ms;
-        last_rate_report_frames = frame_counter;
-    }
-#endif
 }
 
 /* add noise based on throttle level (from 0..1) */

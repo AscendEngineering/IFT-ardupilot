@@ -29,8 +29,14 @@
 #include <AP_HAL/utility/replace.h>
 #include <AP_Math/vectorN.h>
 #include <SRV_Channel/SRV_Channel.h>
+#include <GCS_MAVLink/GCS.h>
 
 #define UDP_TIMEOUT_MS 100
+
+// free-run (no_lockstep) mode: warn once the physics state is this old
+#define NO_LOCKSTEP_STALE_MS 200
+// stop draining backlog when this little space is left in sensor_buffer
+#define NO_LOCKSTEP_DRAIN_MARGIN 4096
 
 extern const AP_HAL::HAL& hal;
 
@@ -259,10 +265,17 @@ uint32_t JSON::parse_sensors(const char *json)
                 break;
             }
 
-            case BOOLEAN:
-                *((bool *)key.ptr) = strtoull(p, nullptr, 10) != 0;
+            case BOOLEAN: {
+                // JSON booleans are the literals true/false (that is what
+                // rapidjson-based backends such as ardupilot_gazebo emit);
+                // also accept the 0/1 form used by the python examples
+                while (*p == ' ') {
+                    p++;
+                }
+                *((bool *)key.ptr) = (strncmp(p, "true", 4) == 0) || (strtoull(p, nullptr, 10) != 0);
                 //printf("%s/%s = %i\n", key.section, key.key, *((unit8_t *)key.ptr));
                 break;
+            }
 
         }
     }
@@ -276,18 +289,69 @@ uint32_t JSON::parse_sensors(const char *json)
 */
 void JSON::recv_fdm(const struct sitl_input &input)
 {
-    // Receive sensor packet
-    ssize_t ret = sock.recv(&sensor_buffer[sensor_buffer_len], sizeof(sensor_buffer)-sensor_buffer_len, UDP_TIMEOUT_MS);
+    // Receive sensor packet. In no_lockstep (free-run) mode we must not
+    // stall the flight loop: SocketAPM::recv() sits in select() for the
+    // whole timeout before it reports "nothing", so poll with a zero
+    // timeout there (lwip_select has an explicit immediate-return path).
+    ssize_t ret = sock.recv(&sensor_buffer[sensor_buffer_len], sizeof(sensor_buffer)-sensor_buffer_len,
+                            state.no_lockstep ? 0 : UDP_TIMEOUT_MS);
     uint32_t wait_ms = UDP_TIMEOUT_MS;
-    while (ret <= 0) {
-        //printf("No JSON sensor message received - %s\n", strerror(errno));
-        ret = sock.recv(&sensor_buffer[sensor_buffer_len], sizeof(sensor_buffer)-sensor_buffer_len, UDP_TIMEOUT_MS);
-        wait_ms += UDP_TIMEOUT_MS;
-        // if no sensor message is received after 10 second resend servos, this help cope with SITL and the physics getting out of sync
-        if (wait_ms > 1000) {
-            wait_ms = 0;
-            printf("No JSON sensor message received, resending servos\n");
-            output_servos(input);
+
+    if (state.no_lockstep) {
+        const uint32_t now_ms = AP_HAL::millis();
+        if (ret <= 0) {
+            // free-run: no new physics state this loop. Advance sim time
+            // by one loop period and carry on with the last state.
+            // adjust_frame_time() keeps rate_hz consistent with
+            // frame_time_us so rate/RTF reporting stays truthful.
+            // (Known, bounded inaccuracy: the next packet then adds its
+            // full backend deltat on top - time_now_us runs fast in
+            // free-run. Nothing on hardware consumes it.)
+            adjust_frame_time((sitl != nullptr && sitl->loop_rate_hz > 0) ? float(sitl->loop_rate_hz) : 100.0f);
+            time_now_us += frame_time_us;
+            frame_counter++;
+            time_advance();
+
+            // a dead backend is silent here (the lockstep wait below at
+            // least prints), so shout if the state has gone stale
+            if (last_packet_ms != 0 &&
+                now_ms - last_packet_ms > NO_LOCKSTEP_STALE_MS &&
+                now_ms - last_stale_warn_ms > 5000) {
+                last_stale_warn_ms = now_ms;
+                GCS_SEND_TEXT(MAV_SEVERITY_CRITICAL, "SIM: no physics data for %ums",
+                              unsigned(now_ms - last_packet_ms));
+            }
+            return;
+        }
+        last_packet_ms = now_ms;
+
+        // the backend publishes every physics step whether or not we
+        // consumed the previous one, so drain any backlog and parse only
+        // the newest record. Bounds latency and keeps the lwIP netbuf
+        // pool (shared with MAVLink) clear.
+        while (ret > 0) {
+            while (uint8_t *p = (uint8_t *)memchr(&sensor_buffer[sensor_buffer_len], '\n', ret)) {
+                *p = 0;
+            }
+            sensor_buffer_len += ret;
+            if (sizeof(sensor_buffer) - sensor_buffer_len < NO_LOCKSTEP_DRAIN_MARGIN) {
+                break;
+            }
+            ret = sock.recv(&sensor_buffer[sensor_buffer_len], sizeof(sensor_buffer)-sensor_buffer_len, 0);
+        }
+        // everything received is already in sensor_buffer
+        ret = 0;
+    } else {
+        while (ret <= 0) {
+            //printf("No JSON sensor message received - %s\n", strerror(errno));
+            ret = sock.recv(&sensor_buffer[sensor_buffer_len], sizeof(sensor_buffer)-sensor_buffer_len, UDP_TIMEOUT_MS);
+            wait_ms += UDP_TIMEOUT_MS;
+            // if no sensor message is received after 10 second resend servos, this help cope with SITL and the physics getting out of sync
+            if (wait_ms > 1000) {
+                wait_ms = 0;
+                printf("No JSON sensor message received, resending servos\n");
+                output_servos(input);
+            }
         }
     }
 
@@ -348,6 +412,17 @@ void JSON::recv_fdm(const struct sitl_input &input)
     position.xy() += origin.get_distance_NE_double(home);
     use_time_sync = !state.no_time_sync;
 
+    // Handle lockstep setting from JSON
+    if (received_bitmask & LOCKSTEP) {
+        // state.no_lockstep is true when we DON'T want lockstep
+        // So we need to check if it changed and act accordingly
+        if (state.no_lockstep != last_no_lockstep) {
+            last_no_lockstep = state.no_lockstep;
+            printf("Lockstep mode changed: no_lockstep=%d (lockstep %s)\n",
+                   int(state.no_lockstep), state.no_lockstep ? "DISABLED" : "ENABLED");
+        }
+    }
+
     // deal with euler or quaternion attitude
     if ((received_bitmask & QUAT_ATT) != 0) {
         // if we have a quaternion attitude use it rather than euler
@@ -403,8 +478,10 @@ void JSON::recv_fdm(const struct sitl_input &input)
     time_now_us += deltat * 1.0e6;
 
     if (is_positive(deltat) && deltat < 0.1) {
-        // time in us to hz
-        if (use_time_sync) {
+        // Only adjust frame time if we want lockstep
+        // When no_lockstep is true, skip adjust_frame_time to let SITL run free
+        if (use_time_sync && !state.no_lockstep) {
+            // time in us to hz
             adjust_frame_time(1.0 / deltat);
         }
         // match actual frame rate with desired speedup
@@ -494,8 +571,14 @@ void JSON::update(const struct sitl_input &input)
     // as the model does not provide mag feild we calculate it from position and attitude
     update_mag_field_bf();
 
-    // allow for changes in physics step
-    adjust_frame_time(constrain_float(sitl->loop_rate_hz, rate_hz-1, rate_hz+1));
+    // allow for changes in physics step. In no_lockstep mode the
+    // physics rate is decoupled from the loop rate, so leave the frame
+    // time alone (recv_fdm() derives it from SIM_RATE_HZ instead).
+    // Deliberately NOT gated on use_time_sync (upstream 4.7 is): the
+    // HITL bench relies on this running with no_time_sync set.
+    if (!state.no_lockstep) {
+        adjust_frame_time(constrain_float(sitl->loop_rate_hz, rate_hz-1, rate_hz+1));
+    }
 
 #if 0
     // report frame rate
