@@ -204,6 +204,27 @@ for a desktop-only regression check that doesn't involve the board at all.
 Two independent processes run on the laptop, and it helps to keep their roles
 separate:
 
+- **Boot-loop triage (bench, 2026-09-01).** A board that re-enumerates every ~6 s with
+  `WDG: … IE34816` (`0x8800` = watchdog_reset + main_loop_stuck) and console text
+  `No JSON sensor message received, resending servos` is simply waiting for physics
+  in lockstep: the IWDG (armed right after `setup()`) fires ~2 s after
+  `ArduPilot Ready`. Three host-side causes seen in one afternoon, in order:
+  1. no `pppd` at all — start it with `persist maxfail 0 holdoff 1` (the default
+     30 s `holdoff` almost never lines up with the ~5 s the board is enumerated);
+  2. Gazebo launched on `model.sdf` instead of a **world** — the `Imu`/`Sensors`
+     systems live in the world file, without them `CreateStateJSON()` bails on
+     `!imuMsgValid` and the plugin answers with an empty datagram (`recv()` returns 0,
+     the board keeps waiting); the gz log shows only `Duplicate input frame`;
+  3. plugin state is sticky across board reboots in `lock_step` mode (`arduPilotOnline`
+     never clears, a rebooted board's `frame_count 0` equals the remembered one → every
+     packet is a "Duplicate") — restart Gazebo after fixing anything upstream of it.
+  Diagnose from the host without root: `journalctl -k` for the reset cadence,
+  pymavlink on the MAVLink CDC port for `WDG:` statustexts (send a GCS heartbeat or
+  they stay queued) and the raw `printf` console text that rides between MAVLink
+  frames as `BAD_DATA`, `/sys/class/net/ppp0/statistics/{rx,tx}_bytes` for whether
+  ~1 kB state JSONs are actually going out, and `~/.gz/sim/log/<ts>/server_console.log`
+  for the plugin's view. Expect `PreArm: CrashDump data detected` afterwards — the
+  1.8 s pre-watchdog hardfault leaves a dump in flash; `ARMING_CRSDP_IGN 1` acks it.
 - **`pppd` (§2.4) is network plumbing only.** It turns the second CDC serial port
   into a point-to-point network interface (`ppp0`), giving the laptop
   `192.168.144.1` and the board `192.168.144.14`. It moves IP packets and knows
@@ -449,9 +470,12 @@ bandwidth and lwIP netbufs that MAVLink shares).
 
 What the numbers mean in free-run:
 
-- `SIM rate a/bHz RTF x` — `achieved` is now the flight-loop rate and `target` is
-  `SIM_RATE_HZ`; RTF ≈ 1.0 says the **loop** holds rate. It no longer says anything
-  about physics freshness. Read Gazebo's own RTF for that.
+- `SIM rate a/bHz RTF x` — `achieved` counts frames that advanced the board's sim
+  clock per wall second (free-run: the flight-loop rate; lockstep: physics states
+  with a *new* timestamp — re-sent stale states don't count) and `target` is
+  `SIM_RATE_HZ`. RTF is the sim clock's advance divided by wall time, so in free-run
+  RTF ≈ 1.0 says the **loop** holds rate and says nothing about physics freshness —
+  read Gazebo's own RTF for that (`gz topic -e -t /world/<name>/stats`).
 - `SIM: no physics data for Nms` (CRITICAL, every 5 s) — the board has had no state
   packet for >200 ms and is flying on frozen sensors. In lockstep a dead backend
   stalls the loop loudly; in free-run this statustext is the only warning.
@@ -471,7 +495,11 @@ Two side effects of the same change set, both of which apply to **lockstep** too
    case); now Gazebo's real-time factor is the only pacer in lockstep. The verified
    `SIM rate 200/200Hz RTF ~1.0` result should hold, but re-check it after flashing.
 2. The `SIM rate` statustext moved from `sync_frame_time()` to `time_advance()` so it
-   reports whether or not the backend asks for `no_time_sync`.
+   reports whether or not the backend asks for `no_time_sync`. It counts
+   `time_advance()` calls and reads `time_now_us` directly — `SIM_JSON.h` declares its
+   own `frame_counter` that shadows `Aircraft::frame_counter`, so a report based on
+   the base-class counter reads `SIM rate 0/400Hz RTF 0.00` forever (seen on the bench
+   2026-09-01 while the link was demonstrably running at ~190 exchanges/s).
 
 Desktop smoke test (verified 2026-07-29): headless server + desktop SITL
 `sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --no-rebuild` reaches a 3D

@@ -1,0 +1,141 @@
+# IF800 production param restore  --  corrects SIH contamination in if800-param-backup-2026-07-15.parm
+# Board: CubeOrangePlus 2D0018000551333233343437, production 4.5.6.2 firmware already flashed,
+# contaminated backup already loaded. Load this file ON TOP, reboot, then load it a SECOND time
+# (BATT_*/CAM1_* subtree params only exist after their enable params take effect), reboot again.
+#
+# Sources: sister-vehicle export ift_orginal_params.param + git-original production section of
+# IF800-CubeOrangePlus/defaults.parm (pre-SIH edits). Per-vehicle cals NOT touched.
+
+# ---- SIH-contaminated values -> production ----
+AHRS_EKF_TYPE,3  # SIH AHRS (10) -> EKF3
+GPS_TYPE,9  # SIH GPS (100) -> DroneCAN (git-original prod value)
+GPS_TYPE2,9  # SIH zeroed it -> DroneCAN GPS2 (git-original prod value)
+SERIAL3_PROTOCOL,2  # SIH GPS-on-serial (5) -> MAVLink2 (git-original prod value)
+BATT_MONITOR,8  # SIH disabled -> DroneCAN battery
+BATT2_MONITOR,8  # SIH disabled -> DroneCAN battery
+BRD_HEAT_TARG,45  # SIH lowered to 25 -> IMU heater back to 45
+BRD_RTC_TYPES,1  # SIH mavlink-time (2) -> GPS time
+FLTMODE_CH,5  # SIH moved to ch7 -> ch5 (sister vehicle / firmware default)
+MNT1_PITCH_MIN,-89  # SIH widened to -90 -> production Gremsy limit
+MNT1_YAW_MIN,-180  # SIH widened to -319 -> production limit
+MNT1_YAW_MAX,180  # SIH widened to 319 -> production limit
+INS_ACC3_ID,3015690  # zeroed during SIH debug; relinks THIS board's stored ACC3 cal (id from sister, same hw)
+INS_GYR3_ID,3015690  # same
+CAM1_TYPE,5  # hidden under SIH (CAM1 subtree absent) -> sister operational value
+CAM2_TYPE,0  # SIH MAVLinkCamV2 (6) -> sister has camera on CAM1 not CAM2 (repo git-original said 5 here — VERIFY fleet convention)
+
+# ---- params hidden/compiled-out under SIH (absent from backup), restored from sister vehicle (105) ----
+ADSB_TYPE,0
+AVD_ENABLE,0
+BATT2_ARM_MAH,0
+BATT2_ARM_VOLT,22.5
+BATT2_CAPACITY,17000
+BATT2_CRT_MAH,0
+BATT2_CRT_VOLT,21.1
+BATT2_CURR_MULT,1
+BATT2_FS_CRT_ACT,1
+BATT2_FS_LOW_ACT,2
+BATT2_FS_VOLTSRC,0
+BATT2_LOW_MAH,0
+BATT2_LOW_TIMER,10
+BATT2_LOW_VOLT,21.75
+BATT2_OPTIONS,0
+BATT2_SERIAL_NUM,-1
+BATT_ARM_MAH,0
+BATT_ARM_VOLT,22.5
+BATT_CAPACITY,17000
+BATT_CRT_MAH,0
+BATT_CRT_VOLT,21.1
+BATT_CURR_MULT,1
+BATT_FS_CRT_ACT,1
+BATT_FS_LOW_ACT,2
+BATT_FS_VOLTSRC,0
+BATT_LOW_MAH,0
+BATT_LOW_TIMER,10
+BATT_LOW_VOLT,21.75
+BATT_OPTIONS,0
+BATT_SERIAL_NUM,-1
+CAM1_DURATION,0.1
+CAM1_FEEDBAK_PIN,-1
+CAM1_FEEDBAK_POL,1
+CAM1_HFOV,0
+CAM1_INTRVAL_MIN,0
+CAM1_MNT_INST,0
+CAM1_OPTIONS,0
+CAM1_RELAY_ON,1
+CAM1_SERVO_OFF,1100
+CAM1_SERVO_ON,1300
+CAM1_TRIGG_DIST,0
+CAM1_VFOV,0
+COMPASS_EXTERN3,1
+COMPASS_ORIENT3,0
+COMPASS_SCALE3,0
+COMPASS_USE3,0
+GEN_TYPE,0
+GPS_COM_PORT,1
+GPS_COM_PORT2,1
+GPS_SBP_LOGMASK,-256
+INS4_ACCOFFS_X,0
+INS4_ACCOFFS_Y,0
+INS4_ACCOFFS_Z,0
+INS4_ACCSCAL_X,0
+INS4_ACCSCAL_Y,0
+INS4_ACCSCAL_Z,0
+INS4_ACC_CALTEMP,-300
+INS4_ACC_ID,0
+INS4_GYROFFS_X,0
+INS4_GYROFFS_Y,0
+INS4_GYROFFS_Z,0
+INS4_GYR_CALTEMP,-300
+INS4_GYR_ID,0
+INS4_POS_X,0
+INS4_POS_Y,0
+INS4_POS_Z,0
+INS4_TCAL_ENABLE,0
+INS4_USE,1
+INS5_ACCOFFS_X,0
+INS5_ACCOFFS_Y,0
+INS5_ACCOFFS_Z,0
+INS5_ACCSCAL_X,0
+INS5_ACCSCAL_Y,0
+INS5_ACCSCAL_Z,0
+INS5_ACC_CALTEMP,-300
+INS5_ACC_ID,0
+INS5_GYROFFS_X,0
+INS5_GYROFFS_Y,0
+INS5_GYROFFS_Z,0
+INS5_GYR_CALTEMP,-300
+INS5_GYR_ID,0
+INS5_POS_X,0
+INS5_POS_Y,0
+INS5_POS_Z,0
+INS5_TCAL_ENABLE,0
+INS5_USE,1
+PRX1_TYPE,0
+PRX2_TYPE,0
+PRX3_TYPE,0
+PRX_ALT_MIN,1
+PRX_FILT,0.25
+PRX_IGN_GND,0
+PRX_LOG_RAW,0
+SERVO_BLH_3DMASK,0
+SERVO_BLH_AUTO,0
+SERVO_BLH_DEBUG,0
+SERVO_BLH_MASK,0
+SERVO_BLH_OTYPE,0
+SERVO_BLH_POLES,14
+SERVO_BLH_PORT,0
+SERVO_BLH_RVMASK,0
+SERVO_BLH_TEST,0
+SERVO_BLH_TMOUT,0
+SERVO_BLH_TRATE,10
+VISO_TYPE,0
+
+# ---- REVIEW: bench radio vs aircraft radio (memory: bench SiK-style radio needs these; ----
+# ---- sister aircraft uses SERIAL1_BAUD 57 / SYSID_MYGCS 255. Uncomment ONLY for aircraft install. ----
+#SERIAL1_BAUD,57
+#SYSID_MYGCS,255
+
+# ---- REVIEW: sister uses EK3_IMU_MASK 7 (all 3 IMUs); this board currently 3 (= firmware default). ----
+# ---- Uncomment if fleet standard is 7: ----
+#EK3_IMU_MASK,7

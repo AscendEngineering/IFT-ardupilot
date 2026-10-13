@@ -237,7 +237,8 @@ protected:
     uint64_t last_wall_time_us;
     uint32_t last_fps_report_ms;
     uint32_t last_rate_report_ms;
-    uint32_t last_rate_report_frames;
+    uint32_t rate_report_frames;       // time_advance() calls since last report
+    uint64_t last_rate_report_sim_us;  // time_now_us at last report
     float achieved_rate_hz;  // achieved speedup rate
     int64_t sleep_debt_us;
     uint32_t last_frame_count;

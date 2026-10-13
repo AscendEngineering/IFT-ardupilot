@@ -247,18 +247,27 @@ void Aircraft::time_advance()
     // external physics is holding wall-clock real time. Lives here, not
     // in sync_frame_time(), so it reports whether or not the backend
     // asked for no_time_sync and in both lockstep and free-run modes.
+    //
+    // Counts calls to this function (= frames that advanced the sim
+    // clock) and derives RTF from time_now_us itself. Do NOT use
+    // frame_counter here: several backends (JSON included) declare a
+    // member of the same name that shadows Aircraft::frame_counter, and
+    // the base-class one only advances inside sync_frame_time().
     {
+        rate_report_frames++;
         const uint32_t now_ms = get_wall_time_us() / 1000ULL;
         if (now_ms - last_rate_report_ms >= 5000) {
             if (last_rate_report_ms != 0) {
-                const float dt = (now_ms - last_rate_report_ms) * 0.001f;
-                const float avg_hz = (frame_counter - last_rate_report_frames) / dt;
+                const float wall_dt = (now_ms - last_rate_report_ms) * 0.001f;
+                const float sim_dt = (time_now_us - last_rate_report_sim_us) * 1.0e-6f;
+                const float avg_hz = rate_report_frames / wall_dt;
                 const float target_hz = rate_hz * target_speedup;
                 GCS_SEND_TEXT(MAV_SEVERITY_INFO, "SIM rate %.0f/%.0fHz RTF %.2f",
-                              avg_hz, target_hz, target_hz > 0 ? avg_hz/target_hz : 0.0f);
+                              avg_hz, target_hz, sim_dt / wall_dt);
             }
             last_rate_report_ms = now_ms;
-            last_rate_report_frames = frame_counter;
+            last_rate_report_sim_us = time_now_us;
+            rate_report_frames = 0;
         }
     }
 #endif

@@ -357,18 +357,52 @@ CAM2_MNT_INST 0
 RC9_OPTION 163
 RC15_OPTION 214
 
-# ---- telemetry + RC radio (TELEM1 / SERIAL1) ----
-# There is exactly one radio: it carries both GCS telemetry and RC, as MAVLink2
-# on SERIAL1 at 115200. RC arrives as RC_CHANNELS_OVERRIDE from the GCS (sysid
-# 19), not from an SBUS/PPM receiver. Firmware defaults (SERIAL1_BAUD 57,
-# SYSID_MYGCS 255) silently kill the link after a param wipe, so pin the
-# production values (from if800-param-backup-2026-07-15.parm) here.
+# ---- telemetry + RC control ----
+# There is no SBUS/PPM receiver on this airframe: RC always arrives as MAVLink
+# overrides from a GCS, and GCS_Common.cpp gates those on msg.sysid ==
+# SYSID_MYGCS. Two setups exist and they need different values:
+#   Herelink on TELEM1/SERIAL1  -> SYSID_MYGCS 19  (production; SERIAL1_BAUD 115)
+#   laptop QGC on USB/SERIAL0   -> SYSID_MYGCS 255 (stock QGC system ID)
+# This bench build flies from a laptop joystick over USB, so 255 it is. Setting
+# it back to 19 is what a production restore wants. The SERIAL1 lines stay
+# pinned because the firmware defaults (SERIAL1_BAUD 57) would otherwise kill a
+# radio link after a param wipe (values from if800-param-backup-2026-07-15.parm).
 SERIAL1_PROTOCOL 2
 SERIAL1_BAUD 115
-SYSID_MYGCS 19
+SYSID_MYGCS 255
 RC_OVERRIDE_TIME 3
 RC_OPTIONS 32
 RC_PROTOCOLS 1
 FLTMODE_CH 7
 NET_ENABLE 1
 SERIAL6_PROTOCOL 48
+
+# ---- simulated downward rangefinder ----
+# Needs AP_RANGEFINDER_SIM_ENABLED 1 from sih-extra-hwdef.dat. Type 100 (SIM)
+# reads SITL::SIM::get_rangefinder(), which the on-board MultiCopter model fills
+# with height_agl corrected for roll/pitch and beam width -- flat ground at home
+# altitude. MIN/MAX mimic a LightWare SF00/B (0.2-50 m); both are read live by
+# update_status(), so shrinking them in flight is how you reach the
+# OutOfRangeLow / OutOfRangeHigh paths on the bench.
+RNGFND1_TYPE 100
+RNGFND1_ORIENT 25
+RNGFND1_MIN_CM 20
+RNGFND1_MAX_CM 5000
+RNGFND1_GNDCLEAR 10
+SIM_SONAR_RND 0
+
+# Copter's own surface tracking would otherwise consume this rangefinder in
+# LOITER, so a sensor dropout would change two things at once. Off, to leave the
+# Lua limiter as the only consumer. Reboot-required param.
+SURFTRAK_MODE 0
+
+# ---- board mounting orientation: MUST be 0 for SIH ----
+# Line 4 sets AHRS_ORIENTATION 12 (ROTATION_PITCH_180) because the Cube is
+# mounted inverted in the real IF800 airframe. That correction is wrong here.
+# SIM_Aircraft.cpp pre-rotates fdm.quaternion by ahrs_rotation_inv so that an
+# IMU-driven EKF re-applies the board rotation and cancels it -- but with
+# AHRS_EKF_TYPE 10, AP_AHRS_SIM reads that quaternion verbatim and nothing
+# cancels anything. The pre-rotation survives into the reported attitude as a
+# clean 180 deg roll, and arming fails "Leaning" (AP_Arming.cpp, ANGLE_MAX 2500).
+# Restore 12 when putting this board back on a real aircraft.
+AHRS_ORIENTATION 0
